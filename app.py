@@ -8,6 +8,7 @@ import streamlit as st
 SNOWFLAKE_SECRET_PATH = "[connections.snowflake]"
 REQUIRED_CONNECTION_KEYS = ("account", "user", "warehouse", "database", "schema")
 AUTH_KEYS = ("password", "private_key_file", "authenticator")
+PLM_SNAPSHOT_TABLE = "EDLDB.MRCH_PORTFOLIO_SANDBOX.PLM_SKU_SNAPSHOT"
 
 
 st.set_page_config(
@@ -35,45 +36,15 @@ def missing_connection_items(config: dict[str, Any]) -> list[str]:
     return missing
 
 
-@st.cache_data(ttl="10m", show_spinner="Querying Snowflake...")
-def run_health_check_query() -> pd.DataFrame:
+@st.cache_data(ttl="10m", show_spinner="Pulling PLM SKU snapshot...")
+def run_plm_sku_snapshot_query(row_limit: int) -> pd.DataFrame:
     conn = st.connection("snowflake")
+    safe_limit = max(1, min(int(row_limit), 10000))
     return conn.query(
-        """
-        SELECT
-            CURRENT_ACCOUNT() AS account_name,
-            CURRENT_USER() AS user_name,
-            CURRENT_ROLE() AS role_name,
-            CURRENT_WAREHOUSE() AS warehouse_name,
-            CURRENT_DATABASE() AS database_name,
-            CURRENT_SCHEMA() AS schema_name,
-            CURRENT_TIMESTAMP() AS checked_at
-        """
-    )
-
-
-@st.cache_data(ttl="10m", show_spinner="Running sample audit...")
-def run_sample_audit_query() -> pd.DataFrame:
-    conn = st.connection("snowflake")
-    return conn.query(
-        """
-        SELECT
-            'connection_health' AS audit_name,
-            'Can the deployed app query Snowflake?' AS audit_question,
-            'PASS' AS status,
-            CURRENT_TIMESTAMP() AS evaluated_at
-        UNION ALL
-        SELECT
-            'role_visibility' AS audit_name,
-            'Which Snowflake role is the app using?' AS audit_question,
-            CURRENT_ROLE() AS status,
-            CURRENT_TIMESTAMP() AS evaluated_at
-        UNION ALL
-        SELECT
-            'warehouse_visibility' AS audit_name,
-            'Which warehouse is serving the app?' AS audit_question,
-            CURRENT_WAREHOUSE() AS status,
-            CURRENT_TIMESTAMP() AS evaluated_at
+        f"""
+        SELECT *
+        FROM {PLM_SNAPSHOT_TABLE}
+        LIMIT {safe_limit}
         """
     )
 
@@ -82,16 +53,14 @@ def sample_mock_results() -> pd.DataFrame:
     return pd.DataFrame(
         [
             {
-                "audit_name": "missing_product_owner",
-                "audit_question": "Does every active PLM item have an owner?",
-                "status": "MOCK_PASS",
-                "evaluated_at": "Configure Snowflake secrets to run live.",
+                "product_part_number": "MOCK-001",
+                "snapshot_status": "Mock row",
+                "note": "Configure Snowflake secrets to run live.",
             },
             {
-                "audit_name": "missing_launch_date",
-                "audit_question": "Does every launch-ready item have a launch date?",
-                "status": "MOCK_WARN",
-                "evaluated_at": "Configure Snowflake secrets to run live.",
+                "product_part_number": "MOCK-002",
+                "snapshot_status": "Mock row",
+                "note": "Live data will come from PLM_SKU_SNAPSHOT.",
             },
         ]
     )
@@ -136,20 +105,25 @@ source_col.write(
 
 if not is_configured:
     show_setup_instructions(missing_items)
-    st.subheader("Mock audit results")
+    st.subheader("Mock PLM SKU snapshot")
     st.dataframe(sample_mock_results(), width="stretch", hide_index=True)
     st.stop()
 
+row_limit = st.number_input(
+    "Rows to pull",
+    min_value=1,
+    max_value=10000,
+    value=100,
+    step=100,
+)
+st.caption(f"Query: `SELECT * FROM {PLM_SNAPSHOT_TABLE} LIMIT {int(row_limit)}`")
+
 try:
-    health = run_health_check_query()
-    sample_audit = run_sample_audit_query()
+    plm_snapshot = run_plm_sku_snapshot_query(int(row_limit))
 except Exception as exc:
     st.error("Snowflake secrets were found, but the connection/query failed.")
     st.exception(exc)
     st.stop()
 
-st.subheader("Snowflake connection health")
-st.dataframe(health, width="stretch", hide_index=True)
-
-st.subheader("Sample audit results")
-st.dataframe(sample_audit, width="stretch", hide_index=True)
+st.subheader("PLM SKU snapshot")
+st.dataframe(plm_snapshot, width="stretch", hide_index=True)
